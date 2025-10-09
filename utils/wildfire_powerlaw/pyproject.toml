@@ -1,0 +1,11 @@
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wildfire_powerlaw"
+version = "0.2.0"
+description = "Modified powerlaw with Weibull, GPD, bootstrap SEs, and streamlined outputs"
+requires-python = ">=3.8"
+dependencies = ["numpy","scipy","pandas"]

@@ -1,0 +1,22 @@
+# Ignore data and large shapefiles
+data/
+*.shp
+*.shx
+*.dbf
+*.prj
+*.zip
+*.tif
+*.csv
+*.pdf
+*.png
+*.docx
+*.pptx
+
+# Python and notebook cache
+__pycache__/
+*.ipynb_checkpoints/
+*.egg-info/
+.DS_Store
+
+# System files
+.env
