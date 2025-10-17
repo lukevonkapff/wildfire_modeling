@@ -3022,7 +3022,8 @@ def summarize_parameters_bootstrap(data, xmin=None, discrete=False, R=200, rando
         return (lo <= target) and (target <= hi)
 
     alpha_pl = float(dists['power_law'].parameter1) if 'power_law' in dists else np.nan
-    target_gpd_to_pl = (1.0/alpha_pl) if (alpha_pl and np.isfinite(alpha_pl)) else np.nan
+    target_gpd_to_pl = (1.0 / (alpha_pl - 1.0)) if (alpha_pl and np.isfinite(alpha_pl) and alpha_pl > 1.0) else np.nan
+
 
     reduces = []
     for n in df.index:
@@ -3088,25 +3089,30 @@ class Lognormal_Excess(Lognormal):
         return "lognormal_excess"
 
     def fit(self, data=None, suppress_output=False):
-        # Fit untruncated lognormal on the ENTIRE original data (positive values)
-        if data is None and hasattr(self, 'parent_Fit'):
-            data = self.parent_Fit.data_original
         import numpy as np
+        if data is None and hasattr(self, "parent_Fit"):
+            data = self.parent_Fit.data_original
+
+        xmin = getattr(self, "xmin", 0)
         data = np.asarray(data, dtype=float)
-        data = data[data > 0]
-        if len(data) < 2:
+        data = data[data >= xmin]
+        y = data - xmin  # <-- shift-fit support [0, ∞)
+        y = y[y > 0]
+        if len(y) < 2:
             return super().fit(data=[], suppress_output=True)
-        logx = np.log(data)
-        mu = float(np.mean(logx))
-        # population MLE uses ddof=0
-        sigma = float(np.std(logx, ddof=0))
+
+        logy = np.log(y)
+        mu = np.mean(logy)
+        sigma = np.std(logy, ddof=0)
         sigma = max(sigma, 1e-12)
         self.parameters((mu, sigma))
-        # still compute KS etc relative to x>=xmin using inherited methods
+
+        # still compute KS relative to tail (using parent_Fit.data trimmed to xmin)
         try:
-            self.KS()  # will use parent_Fit.data trimmed to xmin
+            self.KS()
         except Exception:
             pass
+
 
 
 class Weibull_Excess(Weibull):
@@ -3115,40 +3121,40 @@ class Weibull_Excess(Weibull):
         return "weibull_excess"
 
     def fit(self, data=None, suppress_output=False):
-        # Fit an untruncated continuous Weibull (k>0, lam>0) on ENTIRE original data
-        if data is None and hasattr(self, 'parent_Fit'):
-            data = self.parent_Fit.data_original
         import numpy as np
-        from math import inf
         from scipy.optimize import fmin
+
+        if data is None and hasattr(self, "parent_Fit"):
+            data = self.parent_Fit.data_original
+
+        xmin = getattr(self, "xmin", 0)
         x = np.asarray(data, dtype=float)
-        x = x[x > 0]
-        if len(x) < 2:
+        x = x[x >= xmin]
+        y = x - xmin
+        y = y[y > 0]
+
+        if len(y) < 2:
             return super().fit(data=[], suppress_output=True)
 
-        # crude initial guesses: k0=1.0 (exponential), lam0=mean(x)
-        k0 = 1.0
-        lam0 = max(float(np.mean(x)), 1e-8)
+        k0, lam0 = 1.0, max(np.mean(y), 1e-8)
 
         def nll(params):
-            k, lam = params[0], params[1]
+            k, lam = params
             if k <= 0 or lam <= 0:
                 return 1e300
-            # standard Weibull log-likelihood (not left-truncated)
-            # log f(x) = log(k/lam) + (k-1)log(x/lam) - (x/lam)^k
-            z = x / lam
-            ll = np.sum(np.log(k/lam) + (k-1)*np.log(z) - np.power(z, k))
-            return -float(ll)
+            z = y / lam
+            ll = np.sum(np.log(k / lam) + (k - 1) * np.log(z) - z**k)
+            return -ll
 
-        (k_hat, lam_hat), nll_val, *_ = fmin(lambda p: nll(p), (k0, lam0), full_output=True, disp=False)
-        if not (np.isfinite(k_hat) and np.isfinite(lam_hat) and k_hat > 0 and lam_hat > 0):
-            # fallback to parent fit
-            return super().fit(data=x, suppress_output=True)
+        (k_hat, lam_hat), *_ = fmin(lambda p: nll(p), (k0, lam0),
+                                   full_output=True, disp=False)
         self.parameters((float(k_hat), float(lam_hat)))
+
         try:
-            self.KS()  # evaluate goodness relative to tail, like others
+            self.KS()
         except Exception:
             pass
+
 
 
 
