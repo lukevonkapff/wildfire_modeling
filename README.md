@@ -22,3 +22,5 @@ The repo contains an environment.yml file (or requirements.txt). Run the followi
 -> conda env create -f environment.yml
 -> conda activate modis_env
 -> pip install -e .
+
+Most of the analysis is shown in the notebooks folder, with all functions defined in utils. Some cells in notebooks take a long time to run, so I added lines saving them into the data folder, that way you only have to run them once. The saved geodataframes are too big to be pushed to git.
