@@ -24,6 +24,18 @@
 from __future__ import print_function
 import sys
 
+import warnings
+import contextlib
+import os
+
+# Global flag for silencing output
+SUPPRESS_OUTPUT = True
+
+# Suppress all warnings if enabled
+if SUPPRESS_OUTPUT:
+    warnings.filterwarnings("ignore")
+    sys.stderr = open(os.devnull, "w")
+
 __version__ = "1.5"
 
 # This needs to be a list of the keys in the supported_distributions

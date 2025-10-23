@@ -8,6 +8,12 @@ from scipy.optimize import differential_evolution
 import geopandas as gpd
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import os
+import rasterio
+import rasterio.mask
+from scipy import stats
+from collections import Counter
+import re
 
 def ccdf_exponential(x, lam, xmin=12):
     mask = x >= xmin
@@ -566,13 +572,11 @@ def plot_savanna_fires(mtbs_classified, biome="both"):
     if biome not in valid_biomes:
         raise ValueError(f"biome must be one of {valid_biomes}")
 
-    # Select target biomes
     if biome == "both":
         target_biomes = ["Savannas", "Woody savannas"]
     else:
         target_biomes = [biome]
 
-    # --- Filter clean data ---
     subset = mtbs_classified[
         mtbs_classified["modis_cl_1"].isin(target_biomes)
     ].copy()
@@ -652,3 +656,223 @@ def plot_savanna_fires(mtbs_classified, biome="both"):
 
     plt.tight_layout()
     plt.show()
+
+def plot_fire_counts_faceted(mtbs_classified, year_col="year", static_col="modis_cl_1",
+                             ncols=3, panel_width=6, panel_height=4):
+    """
+    Faceted barplots of fire counts per year by MODIS class + overall.
+
+    Parameters
+    ----------
+    mtbs_classified : GeoDataFrame
+        Must have columns [year_col, static_col].
+    year_col : str
+        Column with year values.
+    static_col : str
+        Column with MODIS class labels.
+    ncols : int
+        Number of columns in the facet grid.
+    panel_width : float
+        Width of each panel in inches.
+    panel_height : float
+        Height of each panel in inches.
+    """
+    yearly_counts = mtbs_classified.groupby(year_col).size()
+
+    category_counts = (
+        mtbs_classified.groupby([year_col, static_col])
+        .size()
+        .unstack(fill_value=0)
+    )
+
+    categories = category_counts.columns.tolist()
+    n_categories = len(categories)
+    n_plots = n_categories + 1
+
+    nrows = int(np.ceil(n_plots / ncols))
+
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(panel_width * ncols, panel_height * nrows),
+        sharex=True, sharey=True
+    )
+    axes = axes.flatten()
+
+    for i, cat in enumerate(categories):
+        ax = axes[i]
+        category_counts[cat].plot(kind="bar", ax=ax, color="tab:blue", alpha=0.7)
+        ax.set_title(cat)
+        ax.set_xlabel("")
+        ax.set_ylabel("Fires")
+
+    ax = axes[n_categories]
+    yearly_counts.plot(kind="bar", ax=ax, color="black", alpha=0.8)
+    ax.set_title("Overall Fires")
+    ax.set_xlabel("")
+    ax.set_ylabel("Fires")
+
+    for j in range(n_categories + 1, len(axes)):
+        fig.delaxes(axes[j])
+
+    fig.suptitle("MTBS Fires by Year and Static MODIS Classification", fontsize=18, y=1.02)
+    plt.tight_layout()
+    plt.show()
+
+def fire_threshold_analysis(mtbs_classified, year_col="year", area_col="area_km2",
+                            thresholds=[0, 4, 10, 20, 50]):
+    """
+    Plot yearly fire counts at different minimum fire size thresholds.
+
+    Parameters
+    ----------
+    mtbs_classified : DataFrame/GeoDataFrame
+        Must include [year_col, area_col].
+    year_col : str
+        Column with fire years.
+    area_col : str
+        Column with fire size (km²).
+    thresholds : list of floats
+        Minimum fire size thresholds to test (km²).
+    """
+    yearly_counts_by_thresh = {}
+
+    for t in thresholds:
+        filtered = mtbs_classified[mtbs_classified[area_col] >= t]
+        yearly_counts = filtered.groupby(year_col).size()
+        yearly_counts_by_thresh[t] = yearly_counts
+
+    counts_df = pd.DataFrame(yearly_counts_by_thresh).fillna(0).astype(int)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for t in thresholds:
+        ax.plot(counts_df.index, counts_df[t],
+                marker="o", label=f"≥ {t} km²")
+
+    ax.set_title("Yearly Fire Counts by Threshold")
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Number of Fires")
+    ax.legend(title="Min fire size")
+    plt.tight_layout()
+    plt.show()
+
+def build_static_modis_tiles(modis_by_year, out_dir="static_modis_tiles"):
+    """
+    Build static MODIS rasters (per tile), by taking pixelwise mode across years.
+    Returns dict: {tile_id: out_path}
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    tile_pattern = re.compile(r"h\d{2}v\d{2}")
+
+    tile_files = {}
+    for year, files in modis_by_year.items():
+        for f in files:
+            m = tile_pattern.search(os.path.basename(f))
+            if not m:
+                continue
+            tile_id = m.group()
+            tile_files.setdefault(tile_id, []).append(f)
+
+    out_paths = {}
+
+    for tile_id, files in tile_files.items():
+        arrays = []
+        ref_profile = None
+
+        for f in files:
+            with rasterio.open(f) as src:
+                if ref_profile is None:
+                    ref_profile = src.profile.copy()
+                    nodata = ref_profile.get("nodata", 255)
+                arr = src.read(1).astype(float)
+                arrays.append(arr)
+
+        stack = np.stack(arrays, axis=0)
+        stack = np.where((stack == nodata) | (stack == 17), np.nan, stack)
+
+        mode_map, _ = stats.mode(stack, axis=0, nan_policy="omit")
+        static_map = np.squeeze(mode_map).astype(np.uint8)
+        
+        out_path = os.path.join(out_dir, f"static_modis_mode_{tile_id}.tif")
+        ref_profile.update(dtype=rasterio.uint8, count=1, compress="lzw", nodata=nodata)
+        with rasterio.open(out_path, "w", **ref_profile) as dst:
+            dst.write(static_map, 1)
+        out_paths[tile_id] = out_path
+
+    return out_paths
+
+def classify_with_static(fires_gdf, static_tile_dict, modis_to_gfa):
+    """
+    Classify fires with static MODIS rasters (per tile).
+    
+    Parameters
+    ----------
+    fires_gdf : GeoDataFrame
+        Fire perimeters (must have geometry).
+    static_tile_dict : dict
+        {tile_id: raster_path} from build_static_modis_tiles.
+    modis_to_gfa : dict
+        Mapping from MODIS class integer -> GFA category (string).
+    
+    Returns
+    -------
+    fires_gdf : GeoDataFrame
+        Copy with new column 'modis_class_static'.
+    """
+    results = []
+    
+    for tile_id, raster_path in static_tile_dict.items():
+        with rasterio.open(raster_path) as src:
+            fires_proj = fires_gdf.to_crs(src.crs) 
+
+            for idx, fire in fires_proj.iterrows():
+                try:
+                    out_image, _ = rasterio.mask.mask(src, [fire.geometry], crop=True)
+                except ValueError:
+                    continue
+
+                data = out_image[0]
+                data = data[(data != src.nodata) & (data != 255)]
+                if data.size > 0:
+                    mapped = [modis_to_gfa.get(int(val), "Other") for val in data]
+                    majority = Counter(mapped).most_common(1)[0][0]
+                    results.append((idx, majority))
+
+    fires_gdf = fires_gdf.copy()
+    fires_gdf["modis_class_static"] = "Unknown"
+    for idx, cls in results:
+        fires_gdf.at[idx, "modis_class_static"] = cls
+    
+    return fires_gdf
+
+def classify_with_modis(fires_gdf, year_col, modis_by_year, modis_to_gfa):
+    results = []
+    for year, fires in fires_gdf.groupby(fires_gdf[year_col]):
+        if year not in modis_by_year:
+            continue
+        for modis_file in modis_by_year[year]:
+            with rasterio.open(modis_file) as src:
+                fires_proj = fires.to_crs(src.crs)
+                for idx, fire in fires_proj.iterrows():
+                    try:
+                        out_image, _ = rasterio.mask.mask(src, [fire.geometry], crop=True)
+                    except ValueError:
+                        continue
+                    data = out_image[0]
+                    data = data[(data != src.nodata) & (data != 255)]
+                    if data.size > 0:
+                        mapped = [modis_to_gfa.get(int(val), "Other") for val in data]
+                        majority = Counter(mapped).most_common(1)[0][0]
+                        results.append((idx, majority))
+    fires_gdf = fires_gdf.copy()
+    fires_gdf["modis_class_timevary"] = "Unknown"
+    for idx, cls in results:
+        fires_gdf.at[idx, "modis_class_timevary"] = cls
+    return fires_gdf
+
+def load_shapefile(shp_path, projection, area_col=None):
+    gdf = gpd.read_file(shp_path)
+    gdf = gdf.set_crs(projection)
+    gdf = gdf.to_crs("EPSG:6933")
+    if area_col is not None and area_col not in gdf.columns:
+        gdf[area_col] = gdf.geometry.area / 1e6 
+    return gdf

@@ -195,7 +195,7 @@ def build_comparison_table(results_dict, counts_dict, drop_classes=None,
         counts = counts_dict.get(dataset, {})
         for modis_class, res in classes.items():
             n = counts.get(modis_class, np.nan)
-            if pd.isna(n) or n < min_n:  # skip small classes
+            if pd.isna(n) or n < min_n:
                 continue
 
             best_fit = res.get("best_fit", None)
@@ -205,14 +205,11 @@ def build_comparison_table(results_dict, counts_dict, drop_classes=None,
             if best_fit is None or llmat is None or params is None:
                 continue
 
-            # helper: check filtering rules
             def valid_fit(dist):
                 if dist not in params.index:
                     return False
-                # must not reduce_to something else
                 if pd.notna(params.loc[dist, "reduces_to"]):
                     return False
-                # relative error check
                 for p, se in [("p1", "p1_se"), ("p2", "p2_se")]:
                     if p in params.columns and se in params.columns:
                         val, err = params.loc[dist, p], params.loc[dist, se]
@@ -221,18 +218,15 @@ def build_comparison_table(results_dict, counts_dict, drop_classes=None,
                                 return False
                 return True
 
-            # Δloglik column
             col = [c for c in llmat.columns if best_fit in c]
             if not col:
                 continue
             deltas = llmat[col[0]].copy()
 
             fits = []
-            # include best fit if valid
             if valid_fit(best_fit):
                 fits.append((best_fit, "", ""))
 
-            # include others within threshold
             for dist, val in deltas.items():
                 if dist == best_fit:
                     continue
@@ -246,7 +240,6 @@ def build_comparison_table(results_dict, counts_dict, drop_classes=None,
                 "n": n, "fits": fits
             })
 
-    # unify across datasets
     final_rows = []
     all_classes = sorted(rows_by_class.keys())
     for modis in all_classes:
@@ -272,11 +265,9 @@ def build_comparison_table(results_dict, counts_dict, drop_classes=None,
 
     df = pd.DataFrame(final_rows)
 
-    # drop unwanted
     if drop_classes:
         df = df[~df["modis_class"].isin(drop_classes)]
 
-    # collapse class names (show only once per group)
     def keep_first(series):
         return [series.iloc[0]] + [""] * (len(series) - 1)
     df["modis_class"] = df.groupby("modis_class")["modis_class"].transform(keep_first)
