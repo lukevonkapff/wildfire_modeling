@@ -8,39 +8,71 @@ import numpy as np
 import pandas as pd
 import wildfire_powerlaw as wfpl
 
+
 def load_shapefile(shp_path, projection, area_col=None):
+    """Load a shapefile, set its projection, reproject to equal-area, and optionally compute area.
+
+    Args:
+        shp_path (str): Path to the shapefile to load.
+        projection (str): CRS string or EPSG code for the source projection.
+        area_col (str, optional): Name of column to store polygon area in km².
+            If provided and missing, it will be computed.
+
+    Returns:
+        GeoDataFrame: Shapefile reprojected to EPSG:6933 with optional area column.
+    """
     gdf = gpd.read_file(shp_path)
     gdf = gdf.set_crs(projection)
     gdf = gdf.to_crs("EPSG:6933")
+
+    # Compute area in km² if requested and not already present
     if area_col is not None and area_col not in gdf.columns:
         gdf[area_col] = gdf.geometry.area / 1e6 
+
     return gdf
 
+
 def classify_with_modis(fires_gdf, year_col, modis_by_year, modis_to_gfa):
+    """Classify fires by majority MODIS land-cover type for each fire geometry.
+
+    Args:
+        fires_gdf (GeoDataFrame): GeoDataFrame of fire polygons with year column.
+        year_col (str): Column name specifying fire year.
+        modis_by_year (dict[int, list[str]]): Mapping of year to list of MODIS raster file paths.
+        modis_to_gfa (dict[int, str]): Mapping from MODIS land-cover code to GFA biome label.
+
+    Returns:
+        GeoDataFrame: Copy of `fires_gdf` with an added column 'modis_class' containing
+        the most frequent MODIS land-cover label intersecting each fire polygon.
+    """
     results = []
 
+    # Loop over fires by year and raster file
     for year, fires in fires_gdf.groupby(fires_gdf[year_col]):
         if year not in modis_by_year:
             continue
         
         for modis_file in modis_by_year[year]:
             with rasterio.open(modis_file) as src:
+                # Project fires to match raster CRS
                 fires_proj = fires.to_crs(src.crs)
 
                 for idx, fire in fires_proj.iterrows():
                     try:
                         out_image, _ = rasterio.mask.mask(src, [fire.geometry], crop=True)
                     except ValueError:
-                        continue
+                        continue  # Skip fires that fall outside raster extent
                     
                     data = out_image[0]
                     data = data[(data != src.nodata) & (data != 255)]
                     
+                    # If valid raster data exists, assign the most common mapped class
                     if data.size > 0:
                         mapped = [modis_to_gfa.get(int(val), "Other") for val in data]
                         majority = Counter(mapped).most_common(1)[0][0]
                         results.append((idx, majority))
 
+    # Copy original GeoDataFrame and fill in classifications
     fires_gdf = fires_gdf.copy()
     fires_gdf["modis_class"] = "Unknown"
     
@@ -49,21 +81,34 @@ def classify_with_modis(fires_gdf, year_col, modis_by_year, modis_to_gfa):
 
     return fires_gdf
 
+
 def plot_distribution_params(results_dicts, counts_dicts, 
                              min_count=200, llhr_cutoff=2.0, 
                              max_rel_error=1.0,
                              log_axes=False,
                              datasets=("GFA", "Idaho", "MTBS")):
-    """
-    Faceted figure with one panel per distribution.
-    - Ellipses for 2-parameter fits (truncated to valid domain).
-    - Horizontal error bars for 1-parameter fits (exponential, power_law).
-    - Skips points with huge relative error (SE/param > max_rel_error).
-    - Optionally log-scale axes.
+    """Visualize fitted distribution parameters across datasets and biomes.
+
+    Each subplot corresponds to one distribution. For 1-parameter distributions,
+    error bars represent uncertainty. For 2-parameter distributions, ellipses
+    show joint uncertainty regions.
+
+    Args:
+        results_dicts (dict): Mapping of dataset name → biome → fit results (params, likelihoods).
+        counts_dicts (dict): Mapping of dataset name → biome → sample counts.
+        min_count (int, optional): Minimum sample count required to include a biome. Defaults to 200.
+        llhr_cutoff (float, optional): Log-likelihood ratio threshold to exclude poor fits. Defaults to 2.0.
+        max_rel_error (float, optional): Maximum allowed relative error (SE/param). Defaults to 1.0.
+        log_axes (bool, optional): Whether to log-scale axes. Defaults to False.
+        datasets (tuple[str], optional): Dataset names for legend markers. Defaults to ("GFA", "Idaho", "MTBS").
+
+    Displays:
+        A faceted matplotlib figure comparing distribution parameter estimates across datasets.
     """
     markers = {"GFA": "o", "Idaho": "s", "MTBS": "^"}
     colors = plt.cm.tab10.colors
     
+    # Collect all unique distribution names
     all_dists = set()
     for dset, res in results_dicts.items():
         for biome, out in res.items():
@@ -77,6 +122,7 @@ def plot_distribution_params(results_dicts, counts_dicts,
     biome_to_color = {}
     panels_with_points = set()
 
+    # Iterate through datasets and biomes, plotting parameter points or ellipses
     for dset, res in results_dicts.items():
         for biome, out in res.items():
             if biome == "Unknown" or counts_dicts[dset].get(biome, 0) < min_count:
@@ -91,6 +137,7 @@ def plot_distribution_params(results_dicts, counts_dicts,
                     if likelihoods.loc[dist_name].min() > llhr_cutoff:
                         continue
 
+                # Assign consistent color to biome
                 if biome not in biome_to_color:
                     biome_to_color[biome] = colors[len(biome_to_color) % len(colors)]
                 ax = axes[all_dists.index(dist_name)]
@@ -100,11 +147,13 @@ def plot_distribution_params(results_dicts, counts_dicts,
                 if np.isnan(p1):
                     continue
 
+                # Skip fits with excessive relative error
                 if not np.isnan(p1_se) and abs(p1) > 0 and p1_se/abs(p1) > max_rel_error:
                     continue
                 if not np.isnan(p2) and not np.isnan(p2_se) and abs(p2) > 0 and p2_se/abs(p2) > max_rel_error:
                     continue
 
+                # Validate parameter domains per distribution family
                 valid = True
                 min_p1, min_p2 = -np.inf, -np.inf
                 if dist_name in ("weibull", "weibull_excess", "stretched_exponential"):
@@ -129,7 +178,9 @@ def plot_distribution_params(results_dicts, counts_dicts,
                 if not valid:
                     continue
 
+                # Plot parameter confidence regions
                 if dist_name in ("exponential", "power_law"):
+                    # One-parameter: horizontal error bar
                     p1_low, p1_high = max(p1 - p1_se, min_p1 + 1e-8), p1 + p1_se
                     ax.errorbar(
                         p1, 0,
@@ -138,10 +189,12 @@ def plot_distribution_params(results_dicts, counts_dicts,
                         color=biome_to_color[biome]
                     )
                 else:
+                    # Two-parameter: ellipse patch
                     theta = np.linspace(0, 2*np.pi, 200)
                     x = p1 + p1_se * np.cos(theta)
                     y = p2 + p2_se * np.sin(theta) if not np.isnan(p2) else np.zeros_like(theta)
 
+                    # Clip to valid parameter domain
                     x = np.clip(x, min_p1, None)
                     y = np.clip(y, min_p2, None)
 
@@ -158,6 +211,7 @@ def plot_distribution_params(results_dicts, counts_dicts,
 
                 panels_with_points.add(dist_name)
 
+    # Configure subplot titles and scales
     for i, dist_name in enumerate(all_dists):
         ax = axes[i]
         if dist_name in panels_with_points:
@@ -170,6 +224,7 @@ def plot_distribution_params(results_dicts, counts_dicts,
         else:
             fig.delaxes(ax)
 
+    # Legends for biome colors and dataset markers
     biome_handles = [
         plt.Line2D([0],[0], marker="o", color="w",
                    markerfacecolor=color, markersize=10, label=biome)
@@ -187,10 +242,25 @@ def plot_distribution_params(results_dicts, counts_dicts,
     plt.tight_layout()
     plt.show()
 
+
 def build_comparison_table(results_dict, counts_dict, drop_classes=None,
                            threshold=2.0, min_n=400, max_relerr=1.0):
+    """Construct a summary DataFrame comparing best-fit distributions across datasets.
+
+    Args:
+        results_dict (dict): Nested dict {dataset → class → results} with likelihood matrices and params.
+        counts_dict (dict): Nested dict {dataset → class → sample counts}.
+        drop_classes (list[str], optional): MODIS classes to exclude from final table. Defaults to None.
+        threshold (float, optional): Max log-likelihood ratio for alternative fits. Defaults to 2.0.
+        min_n (int, optional): Minimum sample count to include a class. Defaults to 400.
+        max_relerr (float, optional): Maximum allowed relative parameter error. Defaults to 1.0.
+
+    Returns:
+        pandas.DataFrame: Table summarizing best and competitive fits across datasets by MODIS class.
+    """
     rows_by_class = {}
 
+    # Build class-level summaries for each dataset
     for dataset, classes in results_dict.items():
         counts = counts_dict.get(dataset, {})
         for modis_class, res in classes.items():
@@ -201,10 +271,10 @@ def build_comparison_table(results_dict, counts_dict, drop_classes=None,
             best_fit = res.get("best_fit", None)
             llmat = res.get("likelihood_matrix", None)
             params = res.get("params", None)
-
             if best_fit is None or llmat is None or params is None:
                 continue
 
+            # Check if a given distribution has valid parameter estimates
             def valid_fit(dist):
                 if dist not in params.index:
                     return False
@@ -218,6 +288,7 @@ def build_comparison_table(results_dict, counts_dict, drop_classes=None,
                                 return False
                 return True
 
+            # Identify candidate fits within the likelihood threshold
             col = [c for c in llmat.columns if best_fit in c]
             if not col:
                 continue
@@ -240,6 +311,7 @@ def build_comparison_table(results_dict, counts_dict, drop_classes=None,
                 "n": n, "fits": fits
             })
 
+    # Expand nested dict into a table
     final_rows = []
     all_classes = sorted(rows_by_class.keys())
     for modis in all_classes:
@@ -265,29 +337,29 @@ def build_comparison_table(results_dict, counts_dict, drop_classes=None,
 
     df = pd.DataFrame(final_rows)
 
+    # Drop unwanted classes
     if drop_classes:
         df = df[~df["modis_class"].isin(drop_classes)]
 
+    # Keep MODIS class name only on first row per group
     def keep_first(series):
         return [series.iloc[0]] + [""] * (len(series) - 1)
     df["modis_class"] = df.groupby("modis_class")["modis_class"].transform(keep_first)
 
     return df.reset_index(drop=True)
 
+
 def plot_modis_category_ccdf(gfa_df, modis_class, xmin=4, which=("power_law")):
-    """
-    Filter gfa_classified for a given MODIS category and plot CCDF with selected fits.
-    
-    Parameters
-    ----------
-    gfa_df : pandas.DataFrame
-        Your classified GFA dataframe, must include 'modis_class' and 'area_km2'.
-    modis_class : str
-        MODIS category name to filter (e.g., 'Croplands').
-    xmin : float, optional
-        Minimum cutoff for fitting (default=4).
-    which : list of str, optional
-        List of distributions to overlay on the CCDF plot.
+    """Plot the complementary CDF (CCDF) of fire sizes for a specific MODIS class.
+
+    Args:
+        gfa_df (pd.DataFrame): Classified GFA dataset including 'modis_class' and 'area_km2'.
+        modis_class (str): MODIS category name to filter (e.g., 'Croplands').
+        xmin (float, optional): Minimum cutoff for fitting. Defaults to 4.
+        which (tuple[str], optional): Distributions to overlay on the CCDF plot. Defaults to ("power_law",).
+
+    Returns:
+        matplotlib.axes.Axes | None: The plot axis if successful, else None if data missing.
     """
     subset = gfa_df[gfa_df["modis_class"] == modis_class]
     
@@ -301,6 +373,7 @@ def plot_modis_category_ccdf(gfa_df, modis_class, xmin=4, which=("power_law")):
         print(f"No valid area data for MODIS class: {modis_class}")
         return None
     
+    # Plot CCDF with overlayed fits from wildfire_powerlaw
     ax = wfpl.plot_ccdf_with_selected_fits(data, xmin=xmin, which=which)
     ax.set_title(f"CCDF of fire size in {modis_class}")
     plt.show()
