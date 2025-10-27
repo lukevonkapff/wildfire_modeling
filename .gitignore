@@ -1,22 +1,16 @@
-# Ignore data and large shapefiles
-data/
-*.shp
-*.shx
-*.dbf
-*.prj
-*.zip
-*.tif
-*.csv
-*.pdf
-*.png
-*.docx
-*.pptx
+# --- Ignore only shapefile components in data/ ---
+data/*.cpg
+data/*.dbf
+data/*.prj
+data/*.shp
+data/*.shx
+data/static_modis_tiles
 
-# Python and notebook cache
+# --- Python and notebook cache ---
 __pycache__/
 *.ipynb_checkpoints/
 *.egg-info/
 .DS_Store
 
-# System files
+# --- Environment / system files ---
 .env
