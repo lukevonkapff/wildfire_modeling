@@ -991,6 +991,70 @@ def classify_with_static(
         fires_out.at[idx, "modis_class_static"] = cls
     return fires_out
 
+def classify_with_static_savanna_check(
+    fires_gdf: gpd.GeoDataFrame,
+    static_tile_dict: dict[str, str],
+    modis_to_gfa: dict[int, str],
+) -> gpd.GeoDataFrame:
+    """Classify fire polygons using static (per-tile) MODIS rasters,
+    except: if the majority class is 'Savannas' but ≤90% of area,
+    assign the 2nd-most common class instead.
+
+    Notes:
+        - The static MODIS rasters are assumed to live under:
+          /Users/lukevonkapff/Desktop/wildfires_github/wildfire_modeling/data/static_modis_tiles
+    """
+    base_dir = "../data/static_modis_tiles"
+    results: list[tuple[int, str]] = []
+
+    for tile_id, raster_path in static_tile_dict.items():
+        # build full path
+        raster_path_full = os.path.join(base_dir, os.path.basename(raster_path))
+
+        try:
+            with rasterio.open(raster_path_full) as src:
+                fires_proj = fires_gdf.to_crs(src.crs)
+
+                for idx, fire in fires_proj.iterrows():
+                    try:
+                        out_image, _ = rasterio.mask.mask(src, [fire.geometry], crop=True)
+                    except ValueError:
+                        continue
+
+                    data = out_image[0]
+                    data = data[(data != src.nodata) & (data != 255)]
+                    if data.size == 0:
+                        continue
+
+                    # Map MODIS numeric codes → GFA class names
+                    mapped = [modis_to_gfa.get(int(val), "Other") for val in data]
+
+                    counts = Counter(mapped)
+                    total = sum(counts.values())
+                    if total == 0:
+                        continue
+
+                    ordered = counts.most_common()
+                    top_class, top_count = ordered[0]
+                    top_frac = top_count / total
+
+                    # Savanna override logic
+                    if top_class == "Savannas" and top_frac <= 0.9 and len(ordered) > 1:
+                        alt_class = ordered[1][0]
+                        results.append((idx, alt_class))
+                    else:
+                        results.append((idx, top_class))
+        except rasterio.errors.RasterioIOError:
+            print(f"⚠️ Skipping missing tile {tile_id}: {raster_path_full}")
+            continue
+
+    fires_out = fires_gdf.copy()
+    fires_out["modis_class_static_no_savanna"] = "Unknown"
+    for idx, cls in results:
+        fires_out.at[idx, "modis_class_static_no_savanna"] = cls
+
+    return fires_out
+
 
 def classify_with_modis(
     fires_gdf: gpd.GeoDataFrame,
