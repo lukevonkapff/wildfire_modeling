@@ -991,24 +991,31 @@ def classify_with_static(
         fires_out.at[idx, "modis_class_static"] = cls
     return fires_out
 
-def classify_with_static_savanna_check(
+def classify_with_static_majority_threshold(
     fires_gdf: gpd.GeoDataFrame,
     static_tile_dict: dict[str, str],
     modis_to_gfa: dict[int, str],
+    min_majority_frac: float = 0.8,
 ) -> gpd.GeoDataFrame:
     """Classify fire polygons using static (per-tile) MODIS rasters,
-    except: if the majority class is 'Savannas' but ≤90% of area,
-    assign the 2nd-most common class instead.
+    but only if one land cover class occupies ≥ `min_majority_frac` of the area.
 
-    Notes:
-        - The static MODIS rasters are assumed to live under:
-          /Users/lukevonkapff/Desktop/wildfires_github/wildfire_modeling/data/static_modis_tiles
+    Otherwise, classify as "Unknown".
+
+    Args:
+        fires_gdf: Fire perimeters (geometry must be present).
+        static_tile_dict: Mapping of tile_id → path to static raster (from `build_static_modis_tiles`).
+        modis_to_gfa: Map from MODIS class code → GFA category string.
+        min_majority_frac: Minimum fraction of pixels needed for confident classification (default 0.8).
+
+    Returns:
+        Copy of `fires_gdf` with new column 'modis_class_static_majority'.
     """
     base_dir = "../data/static_modis_tiles"
     results: list[tuple[int, str]] = []
 
     for tile_id, raster_path in static_tile_dict.items():
-        # build full path
+        # Construct absolute path inside base_dir
         raster_path_full = os.path.join(base_dir, os.path.basename(raster_path))
 
         try:
@@ -1026,32 +1033,32 @@ def classify_with_static_savanna_check(
                     if data.size == 0:
                         continue
 
-                    # Map MODIS numeric codes → GFA class names
+                    # Convert MODIS numeric codes to GFA categories
                     mapped = [modis_to_gfa.get(int(val), "Other") for val in data]
-
                     counts = Counter(mapped)
                     total = sum(counts.values())
                     if total == 0:
                         continue
 
-                    ordered = counts.most_common()
-                    top_class, top_count = ordered[0]
+                    # Get most common class and its fractional coverage
+                    top_class, top_count = counts.most_common(1)[0]
                     top_frac = top_count / total
 
-                    # Savanna override logic
-                    if top_class == "Savannas" and top_frac <= 0.9 and len(ordered) > 1:
-                        alt_class = ordered[1][0]
-                        results.append((idx, alt_class))
-                    else:
+                    # Apply majority threshold
+                    if top_frac >= min_majority_frac:
                         results.append((idx, top_class))
+                    else:
+                        results.append((idx, "Unknown"))
+
         except rasterio.errors.RasterioIOError:
             print(f"⚠️ Skipping missing tile {tile_id}: {raster_path_full}")
             continue
 
+    # Apply classifications
     fires_out = fires_gdf.copy()
-    fires_out["modis_class_static_no_savanna"] = "Unknown"
+    fires_out["modis_class_static_majority"] = "Unknown"
     for idx, cls in results:
-        fires_out.at[idx, "modis_class_static_no_savanna"] = cls
+        fires_out.at[idx, "modis_class_static_majority"] = cls
 
     return fires_out
 
@@ -1506,7 +1513,12 @@ def fit_poisson_tail_trend_by_biome_highres(
 
     ncols = 3
     nrows = int(np.ceil(len(biomes) / ncols))
-    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(4.8 * ncols, 3.6 * nrows), sharey=True)
+    # sharey=False allows each facet its own vertical scale
+    fig, axes = plt.subplots(
+        nrows=nrows, ncols=ncols,
+        figsize=(4.8 * ncols, 3.6 * nrows),
+        sharex=False, sharey=False
+    )
     axes = axes.flatten()
 
     for i, biome in enumerate(biomes):
@@ -1519,7 +1531,10 @@ def fit_poisson_tail_trend_by_biome_highres(
         trends: list[dict] = []
         for Amin in thresholds:
             yearly_counts = (
-                sub.loc[sub[area_col] >= Amin].groupby(year_col).size().reset_index(name="count")
+                sub.loc[sub[area_col] >= Amin]
+                .groupby(year_col)
+                .size()
+                .reset_index(name="count")
             )
             if yearly_counts["count"].sum() == 0:
                 continue
@@ -1550,12 +1565,29 @@ def fit_poisson_tail_trend_by_biome_highres(
         ax = axes[i]
         sig = df_trend["pval"] < 0.05
 
-        ax.errorbar(df_trend["Amin_km2"], df_trend["beta1"], yerr=df_trend["beta1_se"], fmt="o-", capsize=3, color="C0", alpha=0.8)
-        ax.scatter(df_trend.loc[sig, "Amin_km2"], df_trend.loc[sig, "beta1"], color="red", s=25, label="p<0.05")
+        ax.errorbar(
+            df_trend["Amin_km2"],
+            df_trend["beta1"],
+            yerr=df_trend["beta1_se"],
+            fmt="o-",
+            capsize=3,
+            color="C0",
+            alpha=0.8,
+        )
+        ax.scatter(
+            df_trend.loc[sig, "Amin_km2"],
+            df_trend.loc[sig, "beta1"],
+            color="red",
+            s=25,
+            label="p<0.05",
+        )
         ax.axhline(0, color="k", lw=1, ls="--", alpha=0.6)
         ax.set_xscale("log")
 
-        # Adjust x-limits based on data range
+        # independent autoscaling for y per facet
+        ax.relim()
+        ax.autoscale(axis="y")
+
         ax.set_xlim(4, df_trend["Amin_km2"].max())
         ax.set_title(biome, fontsize=11)
         ax.grid(True, alpha=0.3)
@@ -1578,7 +1610,6 @@ def fit_poisson_tail_trend_by_biome_highres(
         skipped_df = pd.DataFrame(skipped, columns=["biome", "n_unique_years"])
         print("⚠️ Skipped due to too few unique years:")
         try:
-            # in notebooks this would display; keep print as fallback
             from IPython.display import display  # type: ignore
             display(skipped_df)
         except Exception:
