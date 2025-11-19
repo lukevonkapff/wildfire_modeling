@@ -5,6 +5,7 @@ data/*.prj
 data/*.shp
 data/*.shx
 data/static_modis_tiles
+data/static_evt
 
 # --- Python and notebook cache ---
 __pycache__/
