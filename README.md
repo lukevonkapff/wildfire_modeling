@@ -2,7 +2,7 @@
 
 ### Data Sources: 
 
-4 public datasets are utilized in this repository. Below are instructions to download each data source:
+5 public datasets are utilized in this repository. Below are instructions to download each data source:
 
 1. USDA Monitoring Trends in Burn Severity (MTBS): Download using https://mtbs.gov/direct-download -> "Burned Areas Boundaries Dataset". Contains wildfire boundaries in USA from 1984-2024 collected using a number of remote sensing methods. Find metadata at this link: https://data.fs.usda.gov/geodata/edw/edw_resources/meta/S_USA.MTBS_BURN_AREA_BOUNDARY.xml
 
@@ -11,6 +11,8 @@
 3. Idaho State University Historical Fires Database: Download using https://giscenter.isu.edu/research/Techpg/HFD/ -> "Download HFD". Contains wildfire boundaries in the western USA (WA, OR, CA, MT, ID, WY, CO, NM, AZ, UT, NV) from 1950-2016 collected in situ.
 
 4. MODIS Terra+Aqua Land Cover Type Yearly L3 Global 500m SIN Grid V061: Download using https://www.earthdata.nasa.gov/data/catalog/lpcloud-mcd12q1-061 -> use Earthdata Search to filter from 01/01/2003-12/31/2016. Contains IGBP land cover classifications globally collected using MODIS. This data product is used to classify fires in the MTBS dataset that do not contain a land cover attribute. Find metadata at this link: https://lpdaac.usgs.gov/documents/1409/MCD12_User_Guide_V61.pdf
+
+5. USDA Landfire Existing Vegetation Type (EVT): Download using https://landfire.gov/data/FullExtentDownloads?field_version_target_id=All&field_theme_target_id=All&field_region_id_target_id=4 -> Existing Vegetation Type -> Download CONUS and Alaska for 2016-2024 for a US raster of categorical vegetation types. Additionally, download https://landfire.gov/vegetation/evt -> Attribute Data Table (CSV) for mapping between raster codes and vegetation attributes.
 
 ### Code Sources:
 
