@@ -19,6 +19,7 @@
 The fitting routine uses code from the powerlaw 1.5 python module (https://pypi.org/project/powerlaw/) written by Jeff Alstott (https://github.com/jeffalstott/powerlaw/blob/master/powerlaw.py) as a starting point, with additional distributions and functionalities added on top.
 
 ### Environment:
+
 The repo contains an environment.yml file (or requirements.txt). Run the following commands to set up environment for running notebooks.
 
 -> conda env create -f environment.yml
@@ -26,3 +27,9 @@ The repo contains an environment.yml file (or requirements.txt). Run the followi
 -> pip install -e .
 
 Most of the analysis is shown in the notebooks folder, with all functions defined in utils. Some cells in notebooks take a long time to run, so I added lines saving them into the data folder, that way you only have to run them once. The saved geodataframes are too big to be pushed to git.
+
+### Directory Structure
+
+- data: After running slow code blocks in the notebooks folder, geodataframes, results dictionaries, and figures will save to this directory.
+- notebooks: This series of Jupyter notebooks walks you through the key pieces of analysis that were performed over the course of this project. Some take very long to run, but results are saved in the 'data' directory to avoid running them more than once.
+- utils: 1) wildfire_powerlaw directory containing the wfpl module that has the stationary MLE fitting and evaluation routine, and 2) .py files that contain all functions called in the 'notebooks' directory.
