@@ -1833,6 +1833,7 @@ def fires_time_series_by_ecoregion(
 
     # Return both long and wide forms of the period-aggregated time series
     return counts_long, counts_wide
+
 def fit_poisson_tail_trend_by_biome_highres(
     df: pd.DataFrame | gpd.GeoDataFrame,
     year_col: str = "year",
