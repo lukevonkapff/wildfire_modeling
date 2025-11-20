@@ -3990,6 +3990,7 @@ def plot_refined_biome_ccdf_cdf_qq(
     df_refined,
     biome_refined,
     xmin=4,
+    col_name = "biome_refined",
     which=("power_law",),
     save_dir="../data",
     year_col="year",
@@ -4130,7 +4131,7 @@ def plot_refined_biome_ccdf_cdf_qq(
     # ---------- main body starts here ----------
 
     # Subset to the chosen refined biome and ensure observations exist
-    subset = df_refined[df_refined["biome_refined"] == biome_refined]
+    subset = df_refined[df_refined[col_name] == biome_refined]
     if subset.empty:
         print(f"No fires found for refined biome: {biome_refined}")
         return None
